@@ -217,6 +217,8 @@ void minerloop_scanhash(struct thr_info *mythr)
 	struct work *work;
 	const bool primary = (!mythr->device_thread) || mythr->primary_thread;
 	
+	applog(LOG_INFO, "minerloop_scanhash", cgpu->name);
+
 #ifdef HAVE_PTHREAD_CANCEL
 	pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
 #endif

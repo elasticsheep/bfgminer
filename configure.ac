@@ -407,6 +407,18 @@ if test "x$avalon" = xyes; then
 fi
 AM_CONDITIONAL([HAS_AVALON], [test x$avalon = xyes])
 
+driverlist="$driverlist sockit"
+sockit="no"
+
+AC_ARG_ENABLE([sockit],
+	[AC_HELP_STRING([--disable-sockit],[Compile support for SocKit (default enabled)])],
+	[sockit=$enableval],
+	[sockit=yes]
+	)
+if test "x$sockit" = xyes; then
+	AC_DEFINE([USE_SOCKIT], [1], [Defined to 1 if SocKit support is wanted])
+fi
+AM_CONDITIONAL([HAS_SOCKIT], [test x$sockit = xyes])
 
 driverlist="$driverlist knc"
 AC_ARG_ENABLE([knc],
