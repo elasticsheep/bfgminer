@@ -4549,6 +4549,7 @@ static void get_benchmark_work(struct work *work)
 	memcpy(&work->data[ 0], blkhdr, 80);
 	memcpy(&work->data[80], workpadding_bin, 48);
 	calc_midstate(work);
+	work->sdiff = 1.0;
 	set_target(work->target, 1.0);
 	
 	work->mandatory = true;

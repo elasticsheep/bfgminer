@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include <math.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -133,6 +134,37 @@ bool sockit_thread_init(struct thr_info *thr)
 	return true;
 }
 
+static double DIFFEXACTONE = 26959946667150639794667015087019630673637144422540572481103610249215.0;
+static const uint64_t diffone = 0xFFFF000000000000ull;
+
+static void bdiff_target_leadzero(unsigned char *target, double diff)
+{
+	uint64_t *data64, h64;
+	double d64;
+
+	d64 = diffone;
+	d64 /= diff;
+	d64 = ceil(d64);
+	h64 = d64;
+
+	memset(target, 0, 32);
+	if (d64 < 18446744073709551616.0) {
+		unsigned char *rtarget = target;
+		memset(rtarget, 0, 32);
+		if (opt_scrypt)
+			data64 = (uint64_t *)(rtarget + 2);
+		else
+			data64 = (uint64_t *)(rtarget + 4);
+		*data64 = htobe64(h64);
+	} else {
+		/* Support for the classic all FFs just-below-1 diff */
+		if (opt_scrypt)
+			memset(&target[2], 0xff, 30);
+		else
+			memset(&target[4], 0xff, 28);
+	}
+}
+
 static
 bool sockit_job_prepare(struct thr_info *thr, struct work *work, __maybe_unused uint64_t max_nonce)
 {
@@ -143,10 +175,35 @@ bool sockit_job_prepare(struct thr_info *thr, struct work *work, __maybe_unused 
 
 	char hex[153];
 	bin2hex(hex, &work->data[0], 76);
-	applog(LOG_INFO, "%"PRIpreprv": Preparing work %s",
-	       proc->proc_repr, hex);
+	applog(LOG_INFO, "%"PRIpreprv": Preparing work %s", proc->proc_repr, hex);
 
-	work_to_sockit_payload(&sockit->payload, work);
+	unsigned char flipped_data[80];
+	swap32yes(flipped_data, work->data, 80 / 4);
+
+	applog(LOG_INFO, "+");
+
+	memcpy(sockit->midstate, work->midstate, 32);
+	sockit->block1[0] = bswap_32(*(unsigned *)(flipped_data + 64));
+	sockit->block1[1] = bswap_32(*(unsigned *)(flipped_data + 68));
+	sockit->block1[2] = bswap_32(*(unsigned *)(flipped_data + 72));
+
+	sockit->start_nonce = bswap_32(*(unsigned *)(flipped_data + 76));
+
+	unsigned int rtarget[8];
+	bdiff_target_leadzero((unsigned char *)rtarget, work->sdiff);
+
+	char htarget[65];
+	bin2hex(htarget, (unsigned char *)rtarget, 32);
+	applog(LOG_DEBUG, "Generated target %s", htarget);
+
+	sockit->target[0] = rtarget[0];
+	sockit->target[1] = rtarget[1];
+	sockit->target[2] = rtarget[2];
+	sockit->target[3] = rtarget[3];
+	sockit->target[4] = rtarget[4];
+	sockit->target[5] = rtarget[5];
+	sockit->target[6] = rtarget[6];
+	sockit->target[7] = rtarget[7];
 
 	work->blk.nonce = 0xffffffff;
 	return true;
@@ -155,18 +212,59 @@ bool sockit_job_prepare(struct thr_info *thr, struct work *work, __maybe_unused 
 static
 void sockit_job_start(struct thr_info __maybe_unused * const thr)
 {
+	struct cgpu_info *proc = thr->cgpu;
+	struct sockit_device * const sockit = proc->device_data;
+
 	applog(LOG_INFO, "SOCKIT: sockit_job_start");
+
+	sockit->regs[0] = sockit->midstate[0];
+	sockit->regs[1] = sockit->midstate[1];
+	sockit->regs[2] = sockit->midstate[2];
+	sockit->regs[3] = sockit->midstate[3];
+	sockit->regs[4] = sockit->midstate[4];
+	sockit->regs[5] = sockit->midstate[5];
+	sockit->regs[6] = sockit->midstate[6];
+	sockit->regs[7] = sockit->midstate[7];
+
+	sockit->regs[16] = sockit->block1[0];
+	sockit->regs[17] = sockit->block1[1];
+	sockit->regs[18] = sockit->block1[3];
+
+	sockit->regs[19] = sockit->target[0];
+	sockit->regs[20] = sockit->target[1];
+	sockit->regs[21] = sockit->target[2];
+	sockit->regs[22] = sockit->target[3];
+	sockit->regs[23] = sockit->target[4];
+	sockit->regs[24] = sockit->target[5];
+	sockit->regs[25] = sockit->target[6];
+	sockit->regs[26] = sockit->target[7];
+
+	// Nonce ranges
+	sockit->regs[28] = sockit->start_nonce;
+	sockit->regs[29] = sockit->start_nonce;
+	sockit->regs[30] = sockit->start_nonce + 1;
+	sockit->regs[31] = sockit->start_nonce;
+	sockit->regs[32] = sockit->start_nonce + 2;
+	sockit->regs[33] = sockit->start_nonce;
+	sockit->regs[34] = sockit->start_nonce + 3;
+	sockit->regs[35] = sockit->start_nonce;
+
+	// Start the nonce search
+	sockit->regs[27] = 0x1;
+
+	for (int i = 0; i < 35; i++)
+	{
+		applog(LOG_INFO, "SOCKIT: [%i] = 0x%08x", i, sockit->regs[i]);
+	}
 }
 
 static
-void sockit_do_io(struct thr_info * const master_thr)
+void sockit_poll(struct thr_info * const master_thr)
 {
 	struct cgpu_info *proc;
 	struct thr_info *thr;
 	struct sockit_device *sockit;
 	struct timeval tv_now;
-	uint32_t counter;
-	struct timeval *tvp_stat;
 
 	//applog(LOG_INFO, "SOCKIT: sockit_do_io");
 
@@ -174,20 +272,29 @@ void sockit_do_io(struct thr_info * const master_thr)
 	thr = proc->thr[0];
 	sockit = proc->device_data;
 
-	uint32_t nonce = 0x12345678;
-
-	if (fudge_nonce(thr->work, &nonce))
+	// Check the miner status
+	uint32_t nonce = 0;
+	uint32_t status = sockit->regs[129];
+	if (status & 0x6)
 	{
-		applog(LOG_INFO, "%"PRIpreprv": nonce = %08lx (work=%p)",
-					 proc->proc_repr, (unsigned long)nonce, thr->work);
-		submit_nonce(thr, thr->work, nonce);
-	}
-	else
-	{
-		applog(LOG_INFO, "SOCKIT: Invalid nonce");
+		// Found nonce
+		nonce = sockit->regs[130];
+
+		if (fudge_nonce(thr->work, &nonce))
+		{
+			applog(LOG_INFO, "%"PRIpreprv": nonce = %08lx (work=%p)",
+						 proc->proc_repr, (unsigned long)nonce, thr->work);
+			submit_nonce(thr, thr->work, nonce);
+		}
+		else
+		{
+			applog(LOG_INFO, "SOCKIT: Invalid nonce");
+		}
+
 	}
 
-	timer_set_delay(&master_thr->tv_poll, &tv_now, 10000);
+	// Arm the timer for the next poll
+	timer_set_delay(&master_thr->tv_poll, &tv_now, 100000); // us
 }
 
 static
@@ -209,22 +316,9 @@ struct device_drv sockit_drv = {
 	.minerloop = minerloop_async,
 	.job_prepare = sockit_job_prepare,
 	.job_start = sockit_job_start,
-	.poll = sockit_do_io,
+	.poll = sockit_poll,
 	.job_process_results = sockit_job_process_results,
 };
-
-void work_to_sockit_payload(struct sockit_payload *p, struct work *w)
-{
-	unsigned char flipped_data[80];
-
-	memset(p, 0, sizeof(struct sockit_payload));
-	swap32yes(flipped_data, w->data, 80 / 4);
-
-	memcpy(p->midstate, w->midstate, 32);
-	p->m7 = bswap_32(*(unsigned *)(flipped_data + 64));
-	p->ntime = bswap_32(*(unsigned *)(flipped_data + 68));
-	p->nbits = bswap_32(*(unsigned *)(flipped_data + 72));
-}
 
 bool fudge_nonce(struct work * const work, uint32_t *nonce_p) {
 	static const uint32_t offsets[] = {0, 0xffc00000, 0xff800000, 0x02800000, 0x02C00000, 0x00400000};
