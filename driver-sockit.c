@@ -241,18 +241,18 @@ void sockit_job_start(struct thr_info __maybe_unused * const thr)
 
 	// Nonce ranges
 	sockit->regs[28] = sockit->start_nonce;
-	sockit->regs[29] = sockit->start_nonce;
-	sockit->regs[30] = sockit->start_nonce + 1;
-	sockit->regs[31] = sockit->start_nonce;
-	sockit->regs[32] = sockit->start_nonce + 2;
-	sockit->regs[33] = sockit->start_nonce;
-	sockit->regs[34] = sockit->start_nonce + 3;
-	sockit->regs[35] = sockit->start_nonce;
+	sockit->regs[29] = 0xFFFFFFFF;
+	sockit->regs[30] = sockit->start_nonce;
+	sockit->regs[31] = 0xFFFFFFFF;
+	sockit->regs[32] = sockit->start_nonce;
+	sockit->regs[33] = 0xFFFFFFFF;
+	sockit->regs[34] = sockit->start_nonce;
+	sockit->regs[35] = 0xFFFFFFFF;
 
 	// Start the nonce search
 	sockit->regs[27] = 0x1;
 
-	for (int i = 0; i < 35; i++)
+	for (int i = 0; i < 36; i++)
 	{
 		applog(LOG_INFO, "SOCKIT: [%i] = 0x%08x", i, sockit->regs[i]);
 	}
@@ -266,20 +266,23 @@ void sockit_poll(struct thr_info * const master_thr)
 	struct sockit_device *sockit;
 	struct timeval tv_now;
 
-	//applog(LOG_INFO, "SOCKIT: sockit_do_io");
+	applog(LOG_INFO, "SOCKIT: sockit_do_io");
 
 	proc = master_thr->cgpu;
 	thr = proc->thr[0];
 	sockit = proc->device_data;
 
 	// Check the miner status
-	uint32_t nonce = 0;
 	uint32_t status = sockit->regs[129];
-	if (status & 0x6)
+	uint32_t nonce = sockit->regs[130];
+	
+	applog(LOG_INFO, "SOCKIT: status = 0x%08x", status);
+	applog(LOG_INFO, "SOCKIT: nonce = 0x%08x", nonce);
+    for (int i = 0; i < 4; i++)
+	    applog(LOG_INFO, "SOCKIT: current[%i] = 0x%08x", i, sockit->regs[131 + i]);
+	    
+	if (status & 0x2)
 	{
-		// Found nonce
-		nonce = sockit->regs[130];
-
 		if (fudge_nonce(thr->work, &nonce))
 		{
 			applog(LOG_INFO, "%"PRIpreprv": nonce = %08lx (work=%p)",
@@ -290,11 +293,10 @@ void sockit_poll(struct thr_info * const master_thr)
 		{
 			applog(LOG_INFO, "SOCKIT: Invalid nonce");
 		}
-
 	}
 
 	// Arm the timer for the next poll
-	timer_set_delay(&master_thr->tv_poll, &tv_now, 100000); // us
+	timer_set_delay(&master_thr->tv_poll, &tv_now, 10000); // us
 }
 
 static
