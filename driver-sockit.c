@@ -297,6 +297,7 @@ void sockit_poll(struct thr_info * const master_thr)
 
 	// Arm the timer for the next poll
 	timer_set_delay(&master_thr->tv_poll, &tv_now, 10000); // us
+	applog(LOG_INFO, "tv_poll %i %i", master_thr->tv_poll.tv_sec, master_thr->tv_poll.tv_usec);
 }
 
 static

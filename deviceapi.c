@@ -582,6 +582,7 @@ djp: ;
 			}
 			
 defer_events:
+			applog(LOG_INFO, "tv_poll %i %i tv_now %i %i", mythr->tv_poll.tv_sec, mythr->tv_poll.tv_usec, tv_now.tv_sec, tv_now.tv_usec);
 			if (timer_passed(&mythr->tv_poll, &tv_now))
 				api->poll(mythr);
 			
